@@ -5,8 +5,6 @@ from typing import List, Optional, Tuple
 import requests
 from geopy.distance import geodesic
 import math
-from dotenv import load_dotenv
-load_dotenv()
 import re
 from geopy.distance import geodesic
 from fastapi import HTTPException
