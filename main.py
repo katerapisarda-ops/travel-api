@@ -3,6 +3,7 @@ app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Tuple
+import os
 import re, math, requests
 from geopy.distance import geodesic
 from fastapi.responses import JSONResponse
