@@ -1,13 +1,49 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Tuple
-import requests
+import re, math, requests
 from geopy.distance import geodesic
-import math
-import re
-from geopy.distance import geodesic
-from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+import traceback
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # dev only
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+def root():
+    return {"ok": True, "hint": "Try /ping and /docs"}
+
+@app.get("/ping")
+def ping():
+    return {"ok": True}
+
+@app.on_event("startup")
+async def list_routes():
+    print("Loaded routes:")
+    for r in app.routes:
+        try:
+            print("  ", r.methods, r.path)
+        except Exception:
+            print("  ", r)
+
+@app.exception_handler(Exception)
+async def catch_all_exceptions(request: Request, exc: Exception):
+    print("UNCAUGHT EXCEPTION:", repr(exc))
+    traceback.print_exc()
+    return JSONResponse(status_code=400, content={"detail": "Unhandled error", "type": str(type(exc).__name__)})
+
 
 # ---------- Helpers (paste near your imports) ----------
 
@@ -38,26 +74,6 @@ def is_within_bay_area(user_ll):
     """Check if coords are within a loose Bay Area radius of SF center."""
     d = safe_distance_miles(user_ll, SF_CENTER)
     return (d is not None) and (d <= BAY_RADIUS_MI)
-
-@app.get("/")
-def root():
-    return {"ok": True, "hint": "Try /ping and /docs"}
-
-@app.post("/echo")
-async def echo(request: Request):
-    # lets us see exactly what the mobile app is sending
-    body = await request.json()
-    return {"received": body}
-
-
-# ------------------ FastAPI app ------------------
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # ------------------ Airtable config ------------------
 BASE_ID = "appApTB0N861wvwFU"
