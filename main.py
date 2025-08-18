@@ -30,6 +30,11 @@ def root():
 def ping():
     return {"ok": True}
 
+@app.post("/echo")
+async def echo(request: Request):
+    body = await request.json()
+    return {"received": body}
+
 @app.on_event("startup")
 async def list_routes():
     print("Loaded routes:")
