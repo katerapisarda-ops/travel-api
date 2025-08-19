@@ -9,6 +9,21 @@ from geopy.distance import geodesic
 from fastapi.responses import JSONResponse
 import traceback
 
+# Load environment variables (e.g., from .env file)
+from pydantic import BaseModel, Field, ConfigDict
+
+class EchoBody(BaseModel):
+    # Accept either "lon" or "lng" from the client
+    lat: float
+    lon: float = Field(..., alias="lng")
+    time_available_mins: int | None = None
+
+    # Allow extra fields (so you can see everything your app sends)
+    model_config = ConfigDict(
+        populate_by_name=True,  # lets "lon" work even if alias present
+        extra="allow"           # keep unknown keys instead of rejecting them
+    )
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -30,11 +45,6 @@ def root():
 def ping():
     return {"ok": True}
 
-@app.post("/echo")
-async def echo(request: Request):
-    body = await request.json()
-    return {"received": body}
-
 @app.on_event("startup")
 async def list_routes():
     print("Loaded routes:")
@@ -50,6 +60,11 @@ async def catch_all_exceptions(request: Request, exc: Exception):
     traceback.print_exc()
     return JSONResponse(status_code=400, content={"detail": "Unhandled error", "type": str(type(exc).__name__)})
 
+@app.post("/echo")
+async def echo(body: EchoBody):
+    # model_dump() includes extra keys because of extra="allow"
+    # by_alias=False ensures the key is "lon" in the response even if client sent "lng"
+    return {"received": body.model_dump(by_alias=False)}
 
 # ---------- Helpers (paste near your imports) ----------
 
