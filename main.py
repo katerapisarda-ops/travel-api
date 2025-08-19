@@ -11,7 +11,7 @@ import traceback
 
 # Load environment variables (e.g., from .env file)
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 class EchoBody(BaseModel):
     # Accept either "lon" or "lng" from the client
@@ -107,13 +107,13 @@ TABLE_EXPERIENCES = "Experiences"
 # ------------------ Request model ------------------
 class RecRequest(BaseModel):
     lat: float
-    lon: float = Field(..., alias="lng")   # 👈 accepts "lon" or "lng"
+    lon: float = Field(..., alias="lng")        # ← normalize lng→lon
     user_id: Optional[str] = None
     interests: Optional[List[str]] = None
     vibes: Optional[List[str]] = None
     transport_mode: Optional[str] = None
     time_available_mins: Optional[int] = None
-    weather: Optional[dict] = None
+    weather: Optional[Dict[str, Any]] = None
     time_of_day: Optional[str] = None
     child_age_years: Optional[int] = None
     need_stroller_friendly: Optional[bool] = None
@@ -122,9 +122,10 @@ class RecRequest(BaseModel):
     want_less_crowded: Optional[bool] = None
     need_changing_station: Optional[bool] = None
 
+    # Production-friendly: accept alias, drop unknowns
     model_config = ConfigDict(
-        populate_by_name=True,  # allows "lon" or alias "lng"
-        extra="ignore"          # ignore unknown keys so they don’t crash
+        populate_by_name=True,
+        extra="ignore",
     )
 
 # ------------------ Helpers ------------------
