@@ -11,6 +11,7 @@ import traceback
 
 # Load environment variables (e.g., from .env file)
 from pydantic import BaseModel, Field, ConfigDict
+from typing import List, Optional
 
 class EchoBody(BaseModel):
     # Accept either "lon" or "lng" from the client
@@ -106,22 +107,25 @@ TABLE_EXPERIENCES = "Experiences"
 # ------------------ Request model ------------------
 class RecRequest(BaseModel):
     lat: float
-    lon: float
-    weather: str = Field(..., description="lowercase e.g. 'clear','clouds','rain','fog','drizzle'")
-    time_available_mins: int = 90
-    transport_mode: str = "walking"  # walking | transit | driving
-    time_of_day: Optional[str] = Field(None, description="morning|midday|afternoon|evening")
-    # preferences (optional -> falls back to Airtable user if missing)
-    user_id: Optional[str] = "user_001"
+    lon: float = Field(..., alias="lng")   # 👈 accepts "lon" or "lng"
+    user_id: Optional[str] = None
     interests: Optional[List[str]] = None
     vibes: Optional[List[str]] = None
-    # accessibility / parent-perk preferences (optional)
+    transport_mode: Optional[str] = None
+    time_available_mins: Optional[int] = None
+    weather: Optional[dict] = None
+    time_of_day: Optional[str] = None
+    child_age_years: Optional[int] = None
     need_stroller_friendly: Optional[bool] = None
     want_food_nearby: Optional[bool] = None
     want_quiet_space: Optional[bool] = None
     want_less_crowded: Optional[bool] = None
     need_changing_station: Optional[bool] = None
-    child_age_years: Optional[float] = None  # e.g., 0.5, 2, 4.5
+
+    model_config = ConfigDict(
+        populate_by_name=True,  # allows "lon" or alias "lng"
+        extra="ignore"          # ignore unknown keys so they don’t crash
+    )
 
 # ------------------ Helpers ------------------
 def fetch_airtable_records(table_name: str):
