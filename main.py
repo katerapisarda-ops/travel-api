@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request, HTTPException
 app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import List, Optional, Tuple
+from typing import Optional, Dict, Any
+from pydantic import BaseModel, Field, ConfigDict
 import os
 import re, math, requests
 from geopy.distance import geodesic
@@ -97,6 +97,60 @@ def is_within_bay_area(user_ll):
     d = safe_distance_miles(user_ll, SF_CENTER)
     return (d is not None) and (d <= BAY_RADIUS_MI)
 
+def get_weather_condition(w: Optional[Dict[str, Any] | str]) -> Optional[str]:
+    """
+    Normalize req.weather into a simple lowercase condition string.
+    Accepts:
+      - "clouds" / "rain" / "clear" (string)
+      - {"condition": "Clouds"} (simple dict)
+      - OpenWeather: {"weather": [{"main": "Clouds"}], ...}
+    Returns: e.g. "clouds", "rain", "clear", or None.
+    """
+    try:
+        if w is None:
+            return None
+        if isinstance(w, str):
+            c = w.strip().lower()
+            return c or None
+        if isinstance(w, dict):
+            # simple shape
+            val = w.get("condition")
+            if isinstance(val, str) and val.strip():
+                return val.strip().lower()
+
+            # OpenWeather-like
+            arr = w.get("weather")
+            if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+                main = arr[0].get("main")
+                if isinstance(main, str) and main.strip():
+                    return main.strip().lower()
+        return None
+    except Exception:
+        return None
+
+def safe_bad_outdoor(w) -> bool:
+    """
+    Wrapper around your existing weather_bad_for_outdoor() that
+    normalizes input and never throws.
+    """
+    try:
+        condition = get_weather_condition(w)
+        # If you already have weather_bad_for_outdoor(condition: str|None) defined:
+        return bool(weather_bad_for_outdoor(condition))
+    except Exception:
+        # Minimal fallback heuristic (only used if your helper isn't available)
+        c = get_weather_condition(w)
+        if not c:
+            return False
+        # Treat clearly nasty conditions as "bad for outdoor"
+        BAD = ("rain", "thunder", "storm", "snow", "sleet", "hail")
+        if any(k in c for k in BAD):
+            return True
+        # Optional: very windy
+        if "wind" in c and ("strong" in c or "gust" in c):
+            return True
+        return False
+
 # ------------------ Airtable config ------------------
 BASE_ID = "appApTB0N861wvwFU"
 API_TOKEN = os.environ.get("AIRTABLE_API_TOKEN", "")
@@ -107,22 +161,27 @@ TABLE_EXPERIENCES = "Experiences"
 # ------------------ Request model ------------------
 class RecRequest(BaseModel):
     lat: float
-    lon: float = Field(..., alias="lng")        # ← normalize lng→lon
+    lon: float = Field(..., alias="lng")
     user_id: Optional[str] = None
     interests: Optional[List[str]] = None
     vibes: Optional[List[str]] = None
     transport_mode: Optional[str] = None
     time_available_mins: Optional[int] = None
-    weather: Optional[Dict[str, Any]] = None
+
+    # 👇 accept either a weather string ("clouds") or an object
+    weather: Optional[Union[str, Dict[str, Any]]] = None
+
     time_of_day: Optional[str] = None
-    child_age_years: Optional[int] = None
+
+    # 👇 allow fractional ages like 2.5
+    child_age_years: Optional[float] = None
+
     need_stroller_friendly: Optional[bool] = None
     want_food_nearby: Optional[bool] = None
     want_quiet_space: Optional[bool] = None
     want_less_crowded: Optional[bool] = None
     need_changing_station: Optional[bool] = None
-
-    # Production-friendly: accept alias, drop unknowns
+    
     model_config = ConfigDict(
         populate_by_name=True,
         extra="ignore",
@@ -213,6 +272,27 @@ def tod_fits(tod: Optional[str], hours_hint: Optional[str]) -> Optional[bool]:
     # If hint exists but not matching requested tod, mark False to lightly down-rank
     return False
 
+def get_weather_condition(w) -> Optional[str]:
+    """Accepts string ('clouds') or dict({'weather': [{'main': 'Clouds'}], ...}) and returns a lowercase condition."""
+    try:
+        if w is None:
+            return None
+        if isinstance(w, str):
+            return w.strip().lower() or None
+        if isinstance(w, dict):
+            # common shapes
+            if "condition" in w and isinstance(w["condition"], str):
+                return w["condition"].strip().lower() or None
+            # OpenWeather style
+            arr = w.get("weather")
+            if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+                main = arr[0].get("main")
+                if isinstance(main, str):
+                    return main.strip().lower() or None
+        return None
+    except Exception:
+        return None
+
 # ------------------ Endpoint ------------------
 @app.post("/recommendations")
 async def recommendations(req: RecRequest):
@@ -287,10 +367,8 @@ async def recommendations(req: RecRequest):
 
             # Weather sensitivity
             weather_sensitive = (f.get("weather_sensitive") or "").strip().lower()  # "avoid_rain", "ok_any", etc.
-            try:
-                bad_outdoor = weather_bad_for_outdoor(req.weather)
-            except Exception:
-                bad_outdoor = False  # fail-open to avoid crashing on weather input shape
+            
+            bad_outdoor = safe_bad_outdoor(req.weather)  # ← normalized & guarded
 
             if weather_sensitive in {"avoid_rain", "outdoor_only"} and bad_outdoor:
                 continue  # hard filter out truly bad combos

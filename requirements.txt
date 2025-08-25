@@ -3,3 +3,4 @@ uvicorn
 pandas
 requests
 geopy
+python-dotenv==1.0.1
