@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, ConfigDict
 import os
 import re, math, requests
