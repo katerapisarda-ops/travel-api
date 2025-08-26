@@ -459,6 +459,10 @@ async def recommendations(req: RecRequest):
                 "title": title,
                 "score": round(score, 2),
                 "distance_miles": round(dist_mi, 2),
+                "lat": latlng[0],              # 👈 add
+                "lon": latlng[1],              # 👈 add
+                "address": f.get("address") or None,  # if you have it
+                "website": f.get("website") or None,  # if you have it
                 "time_estimate_mins": estimate or None,
                 "weather_sensitive": weather_sensitive or None,
                 "best_age_range": f.get("best_age_range"),
