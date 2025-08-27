@@ -1,18 +1,23 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any, Union, Tuple
 from pydantic import BaseModel, Field, ConfigDict
+from typing import List, Optional, Dict, Any
 import os
 import re, math, requests
 from geopy.distance import geodesic
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse 
 import traceback
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Load environment variables (e.g., from .env file)
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
-
+# ------------------ Echo model for testing ------------------
 class EchoBody(BaseModel):
     # Accept either "lon" or "lng" from the client
     lat: float
@@ -24,6 +29,12 @@ class EchoBody(BaseModel):
         populate_by_name=True,  # lets "lon" work even if alias present
         extra="allow"           # keep unknown keys instead of rejecting them
     )
+
+class RecReq(BaseModel):
+    lat: float
+    lng: float | None = None
+    lon: float | None = None
+    time: int = 90
 
 try:
     from dotenv import load_dotenv
@@ -44,39 +55,20 @@ def root():
 
 @app.get("/ping")
 def ping():
-    return {"ok": True}
+    return {"pong": True}
 
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
 
 @app.get("/recommendations")
-def recommendations(
-    lat: float = Query(..., description="Latitude"),
-    lng: float | None = Query(None, description="Longitude (preferred)"),
-    lon: float | None = Query(None, description="Longitude (alias)"),
-    time: int = Query(90, description="Minutes available"),
+def recommendations_get(
+    lat: float = Query(...),
+    lng: float | None = Query(None),
+    lon: float | None = Query(None),
+    time: int = Query(90),
 ):
-    longitude = lng if lng is not None else lon
-    if longitude is None:
-        raise HTTPException(status_code=400, detail="Provide either lng or lon")
-
-    # ... your existing logic ...
-    # return {"recommendations": recs}
-    return {
-        "echo": {"lat": lat, "lng": longitude, "time": time},
-        "recommendations": [
-            {
-                "id": 1,
-                "title": "Sample Café",
-                "score": 9.2,
-                "lat": lat,
-                "lon": longitude,
-                "address": "123 Market St",
-                "website": "https://example.com",
-            }
-        ],
-    }
+    return recommendations_post(RecReq(lat=lat, lng=lng, lon=lon, time=time))
 
 @app.on_event("startup")
 async def list_routes():
@@ -89,15 +81,25 @@ async def list_routes():
 
 @app.exception_handler(Exception)
 async def catch_all_exceptions(request: Request, exc: Exception):
-    print("UNCAUGHT EXCEPTION:", repr(exc))
-    traceback.print_exc()
-    return JSONResponse(status_code=400, content={"detail": "Unhandled error", "type": str(type(exc).__name__)})
+    # Return a clean JSON instead of crashing the process
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal error: {str(exc)}"}
+    )
 
 @app.post("/echo")
 async def echo(body: EchoBody):
     # model_dump() includes extra keys because of extra="allow"
     # by_alias=False ensures the key is "lon" in the response even if client sent "lng"
     return {"received": body.model_dump(by_alias=False)}
+
+@app.post("/recommendations")
+def recommendations_post(req: RecReq):
+    longitude = req.lng if req.lng is not None else req.lon
+    if longitude is None:
+        raise HTTPException(status_code=400, detail="Provide either lng or lon")
+    # ... your existing logic ...
+    return {"recommendations": []}
 
 # ---------- Helpers (paste near your imports) ----------
 
