@@ -16,6 +16,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+import time
+from typing import Any, Dict, List, Tuple
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 # ------------------ Echo model for testing ------------------
 class EchoBody(BaseModel):
@@ -35,6 +40,16 @@ class RecReq(BaseModel):
     lng: float | None = None
     lon: float | None = None
     time: int = 90
+
+class RecReq(BaseModel):
+    lat: float
+    lng: float | None = None
+    lon: float | None = None
+    time: int = 90
+    debug: bool | None = False  # ← enable to get skip reasons back
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 try:
     from dotenv import load_dotenv
@@ -67,8 +82,9 @@ def recommendations_get(
     lng: float | None = Query(None),
     lon: float | None = Query(None),
     time: int = Query(90),
+    debug: bool | None = Query(False),
 ):
-    return recommendations_post(RecReq(lat=lat, lng=lng, lon=lon, time=time))
+    return recommendations_post(RecReq(lat=lat, lng=lng, lon=lon, time=time, debug=debug))
 
 @app.on_event("startup")
 async def list_routes():
@@ -95,11 +111,75 @@ async def echo(body: EchoBody):
 
 @app.post("/recommendations")
 def recommendations_post(req: RecReq):
+    t0 = _now_ms()
     longitude = req.lng if req.lng is not None else req.lon
     if longitude is None:
         raise HTTPException(status_code=400, detail="Provide either lng or lon")
-    # ... your existing logic ...
-    return {"recommendations": []}
+
+    debug_rows: List[Dict[str, Any]] = []
+    total_rows = 0
+    kept: List[Dict[str, Any]] = []
+
+    # 1) Fetch source data (Airtable/CSV/etc.)
+    # TODO: replace with your real fetch; make sure it can't silently fail to []
+    try:
+        # Example:
+        # rows = airtable_fetch()
+        rows = []  # <-- YOUR REAL DATA HERE
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+
+    total_rows = len(rows)
+
+    # 2) Iterate and apply your filters; collect reasons if skipped
+    for r in rows:
+        reasons: List[str] = []
+        title = r.get("title") or r.get("name") or "Untitled"
+
+        # Example geo filter
+        lat = r.get("lat")
+        # NOTE: your data uses `lon` not `lng`; keep that consistent:
+        lon = r.get("lon") if r.get("lon") is not None else r.get("lng")
+
+        if lat is None or lon is None:
+            reasons.append("missing lat/lon")
+
+        if reasons:
+            if req.debug:
+                debug_rows.append({"title": title, "skip": reasons})
+            continue
+
+        # Otherwise compute score and keep
+        score = float(r.get("score") or 0)
+        kept.append({
+            "id": r.get("id") or title,
+            "title": title,
+            "score": score,
+            "lat": lat,
+            "lon": lon,
+            "address": r.get("address"),
+            "website": r.get("website"),
+            # add any other fields you return to the app
+        })
+
+    # 3) Sort & cap
+    kept.sort(key=lambda x: x.get("score", 0), reverse=True)
+    recs = kept[:50]
+
+    # 4) If empty, optionally return a “why it’s empty” summary
+    dur_ms = _now_ms() - t0
+    result = {
+        "meta": {
+            "total_rows": total_rows,
+            "returned": len(recs),
+            "duration_ms": dur_ms,
+            "echo": {"lat": req.lat, "lng_or_lon": longitude, "time": req.time},
+        },
+        "recommendations": recs,
+    }
+    if req.debug:
+        result["debug"] = debug_rows[:100]  # don’t explode the payload
+    return result
 
 # ---------- Helpers (paste near your imports) ----------
 
