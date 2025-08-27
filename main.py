@@ -103,6 +103,43 @@ async def catch_all_exceptions(request: Request, exc: Exception):
         content={"detail": f"Internal error: {str(exc)}"}
     )
 
+@app.get("/debug/vars")
+def debug_vars():
+    """Show which env vars are present (True/False only)."""
+    return {
+        "AIRTABLE_API_KEY_present": bool(os.getenv("AIRTABLE_API_KEY")),
+        "AIRTABLE_BASE_ID_present": bool(os.getenv("AIRTABLE_BASE_ID")),
+        "AIRTABLE_TABLE_present": bool(os.getenv("AIRTABLE_TABLE") or os.getenv("AIRTABLE_TABLE_NAME")),
+        "AIRTABLE_VIEW_present": bool(os.getenv("AIRTABLE_VIEW")),
+    }
+
+@app.get("/debug/airtable")
+def debug_airtable():
+    """Try a small read from Airtable and return field names + a tiny sample."""
+    try:
+        from pyairtable import Table
+    except Exception as e:
+        return {"ok": False, "error": f"pyairtable not installed: {e}"}
+
+    key = os.getenv("AIRTABLE_API_KEY")
+    base = os.getenv("AIRTABLE_BASE_ID")
+    table_name = os.getenv("AIRTABLE_TABLE") or os.getenv("AIRTABLE_TABLE_NAME")
+    view = os.getenv("AIRTABLE_VIEW")  # optional
+
+    if not (key and base and table_name):
+        return {"ok": False, "error": "Missing Airtable env vars", "vars": {
+            "key": bool(key), "base": bool(base), "table": bool(table_name), "view": bool(view)
+        }}
+
+    try:
+        table = Table(key, base, table_name)
+        recs = table.all(max_records=5, view=view)  # tiny read
+        fields_list = [r.get("fields", {}) for r in recs]
+        field_names = sorted({k for row in fields_list for k in row.keys()})
+        return {"ok": True, "count": len(recs), "field_names": field_names, "sample": fields_list}
+    except Exception as e:
+        return {"ok": False, "error": f"Airtable fetch failed: {e.__class__.__name__}: {e}"}
+
 @app.post("/echo")
 async def echo(body: EchoBody):
     # model_dump() includes extra keys because of extra="allow"
