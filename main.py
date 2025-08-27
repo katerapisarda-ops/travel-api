@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any, Union, Tuple
@@ -45,6 +45,38 @@ def root():
 @app.get("/ping")
 def ping():
     return {"ok": True}
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+@app.get("/recommendations")
+def recommendations(
+    lat: float = Query(..., description="Latitude"),
+    lng: float | None = Query(None, description="Longitude (preferred)"),
+    lon: float | None = Query(None, description="Longitude (alias)"),
+    time: int = Query(90, description="Minutes available"),
+):
+    longitude = lng if lng is not None else lon
+    if longitude is None:
+        raise HTTPException(status_code=400, detail="Provide either lng or lon")
+
+    # ... your existing logic ...
+    # return {"recommendations": recs}
+    return {
+        "echo": {"lat": lat, "lng": longitude, "time": time},
+        "recommendations": [
+            {
+                "id": 1,
+                "title": "Sample Café",
+                "score": 9.2,
+                "lat": lat,
+                "lon": longitude,
+                "address": "123 Market St",
+                "website": "https://example.com",
+            }
+        ],
+    }
 
 @app.on_event("startup")
 async def list_routes():
