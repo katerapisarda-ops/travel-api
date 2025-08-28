@@ -22,6 +22,77 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import os
+from urllib.parse import quote
+
+import os
+import requests
+from urllib.parse import quote
+from fastapi import HTTPException
+
+AIRTABLE_KEY = (
+    os.getenv("AIRTABLE_API_KEY")
+    or os.getenv("AIRTABLE_PAT")
+    or os.getenv("AIRTABLE_TOKEN")
+)
+AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
+
+# Per-table identifiers (ID preferred, else name)
+AIRTABLE_USER_IDENT = os.getenv("AIRTABLE_TABLE_USER_ID") or os.getenv("AIRTABLE_TABLE_USER_NAME")
+AIRTABLE_EXP_IDENT  = os.getenv("AIRTABLE_TABLE_EXPERIENCES_ID") or os.getenv("AIRTABLE_TABLE_EXPERIENCES_NAME")
+
+def _airtable_path_component(ident: str) -> str:
+    """If ident looks like a table ID (tbl...), use as-is; otherwise URL-encode the name."""
+    if not ident:
+        return ""
+    return ident if ident.startswith("tbl") else quote(ident, safe="")
+
+def _fetch_airtable_records_by_ident(table_ident: str) -> list[dict]:
+    if not (AIRTABLE_KEY and AIRTABLE_BASE_ID and table_ident):
+        raise HTTPException(status_code=500, detail="Airtable config missing (key/base/table).")
+    path = _airtable_path_component(table_ident)
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{path}"
+    headers = {"Authorization": f"Bearer {AIRTABLE_KEY}"}
+
+    all_records = []
+    offset = None
+    while True:
+        params = {"offset": offset} if offset else {}
+        res = requests.get(url, headers=headers, params=params, timeout=20)
+        res.raise_for_status()
+        data = res.json()
+        all_records.extend(data.get("records", []))
+        offset = data.get("offset")
+        if not offset:
+            break
+    return all_records
+
+
+# ---- Airtable config (prefer ID) ----
+AIRTABLE_KEY = (
+    os.getenv("AIRTABLE_API_KEY")  # primary
+    or os.getenv("AIRTABLE_PAT")   # fallback names if you used them before
+    or os.getenv("AIRTABLE_TOKEN")
+)
+AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
+
+# Prefer table ID (tbl...), else fall back to name(s)
+AIRTABLE_TABLE_IDENT = (
+    os.getenv("AIRTABLE_TABLE_ID")                             # e.g., 'tblXXXXXXXXXXXXXX'
+    or os.getenv("AIRTABLE_TABLE")
+    or os.getenv("AIRTABLE_TABLE_NAME")
+)
+
+def _airtable_path_component(s: str) -> str:
+    """Return the path segment for Airtable; if it's a table ID, use as-is.
+    If it's a name, URL-encode it."""
+    if not s:
+        return ""
+    if s.startswith("tbl"):   # table IDs begin with 'tbl'
+        return s
+    return quote(s, safe="")  # encode spaces, etc.
+
+
 # ------------------ Echo model for testing ------------------
 class EchoBody(BaseModel):
     # Accept either "lon" or "lng" from the client
@@ -86,6 +157,32 @@ def recommendations_get(
 ):
     return recommendations_post(RecReq(lat=lat, lng=lng, lon=lon, time=time, debug=debug))
 
+@app.get("/debug/vars")
+def debug_vars():
+    return {
+        "AIRTABLE_API_KEY_present": bool(AIRTABLE_KEY),
+        "AIRTABLE_BASE_ID_present": bool(AIRTABLE_BASE_ID),
+        "user_ident": AIRTABLE_USER_IDENT,
+        "user_uses_id": bool(AIRTABLE_USER_IDENT and AIRTABLE_USER_IDENT.startswith("tbl")),
+        "exp_ident": AIRTABLE_EXP_IDENT,
+        "exp_uses_id": bool(AIRTABLE_EXP_IDENT and AIRTABLE_EXP_IDENT.startswith("tbl")),
+    }
+
+@app.get("/debug/airtable")
+def debug_airtable():
+    try:
+        user_ok = exp_ok = None
+        if AIRTABLE_USER_IDENT:
+            _ = _fetch_airtable_records_by_ident(AIRTABLE_USER_IDENT)[:1]
+            user_ok = True
+        _ = _fetch_airtable_records_by_ident(AIRTABLE_EXP_IDENT)[:1]
+        exp_ok = True
+        return {"ok": True, "user_ok": user_ok, "exp_ok": exp_ok,
+                "user_uses_id": bool(AIRTABLE_USER_IDENT and AIRTABLE_USER_IDENT.startswith("tbl")),
+                "exp_uses_id": bool(AIRTABLE_EXP_IDENT and AIRTABLE_EXP_IDENT.startswith("tbl"))}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
 @app.on_event("startup")
 async def list_routes():
     print("Loaded routes:")
@@ -102,43 +199,6 @@ async def catch_all_exceptions(request: Request, exc: Exception):
         status_code=500,
         content={"detail": f"Internal error: {str(exc)}"}
     )
-
-@app.get("/debug/vars")
-def debug_vars():
-    """Show which env vars are present (True/False only)."""
-    return {
-        "AIRTABLE_API_KEY_present": bool(os.getenv("AIRTABLE_API_KEY")),
-        "AIRTABLE_BASE_ID_present": bool(os.getenv("AIRTABLE_BASE_ID")),
-        "AIRTABLE_TABLE_present": bool(os.getenv("AIRTABLE_TABLE") or os.getenv("AIRTABLE_TABLE_NAME")),
-        "AIRTABLE_VIEW_present": bool(os.getenv("AIRTABLE_VIEW")),
-    }
-
-@app.get("/debug/airtable")
-def debug_airtable():
-    """Try a small read from Airtable and return field names + a tiny sample."""
-    try:
-        from pyairtable import Table
-    except Exception as e:
-        return {"ok": False, "error": f"pyairtable not installed: {e}"}
-
-    key = os.getenv("AIRTABLE_API_KEY")
-    base = os.getenv("AIRTABLE_BASE_ID")
-    table_name = os.getenv("AIRTABLE_TABLE") or os.getenv("AIRTABLE_TABLE_NAME")
-    view = os.getenv("AIRTABLE_VIEW")  # optional
-
-    if not (key and base and table_name):
-        return {"ok": False, "error": "Missing Airtable env vars", "vars": {
-            "key": bool(key), "base": bool(base), "table": bool(table_name), "view": bool(view)
-        }}
-
-    try:
-        table = Table(key, base, table_name)
-        recs = table.all(max_records=5, view=view)  # tiny read
-        fields_list = [r.get("fields", {}) for r in recs]
-        field_names = sorted({k for row in fields_list for k in row.keys()})
-        return {"ok": True, "count": len(recs), "field_names": field_names, "sample": fields_list}
-    except Exception as e:
-        return {"ok": False, "error": f"Airtable fetch failed: {e.__class__.__name__}: {e}"}
 
 @app.post("/echo")
 async def echo(body: EchoBody):
@@ -339,13 +399,20 @@ class RecRequest(BaseModel):
     )
 
 # ------------------ Helpers ------------------
-def fetch_airtable_records(table_name: str):
-    url = f"https://api.airtable.com/v0/{BASE_ID}/{table_name}"
+def fetch_airtable_records_from_config() -> list[dict]:
+    """Fetch all records from the configured base/table. Uses ID if provided."""
+    if not (AIRTABLE_KEY and AIRTABLE_BASE_ID and AIRTABLE_TABLE_IDENT):
+        raise HTTPException(status_code=500, detail="Airtable configuration missing.")
+
+    path = _airtable_path_component(AIRTABLE_TABLE_IDENT)
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{path}"
+    headers = {"Authorization": f"Bearer {AIRTABLE_KEY}"}
+
     all_records = []
     offset = None
     while True:
         params = {"offset": offset} if offset else {}
-        res = requests.get(url, headers=HEADERS, params=params, timeout=20)
+        res = requests.get(url, headers=headers, params=params, timeout=20)
         res.raise_for_status()
         data = res.json()
         all_records.extend(data.get("records", []))
@@ -452,7 +519,7 @@ async def recommendations(req: RecRequest):
         interests = set([x.lower() for x in (req.interests or [])])
         vibes = set([x.lower() for x in (req.vibes or [])])
         if not interests or not vibes:
-            users = fetch_airtable_records(TABLE_USER)
+            users = _fetch_airtable_records_by_ident(AIRTABLE_USER_IDENT) if AIRTABLE_USER_IDENT else []
             for u in users:
                 f = u.get("fields", {})
                 if f.get("user_id") == req.user_id:
@@ -462,7 +529,7 @@ async def recommendations(req: RecRequest):
                         vibes = set([x.lower() for x in f.get("vibes", [])])
                     break
 
-        experiences = fetch_airtable_records(TABLE_EXPERIENCES)
+        experiences = _fetch_airtable_records_by_ident(AIRTABLE_EXP_IDENT)
 
         # ---------- Precompute limits / knobs ----------
         max_dist_mi = max_distance_for_transport(req.transport_mode)
