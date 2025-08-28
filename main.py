@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 from geopy.distance import geodesic
 
+
 # -------------------- App & CORS --------------------
 app = FastAPI()
 app.add_middleware(
@@ -182,7 +183,14 @@ def build_recommendations(
     child_age_years: float | None = None,
 ) -> List[Dict]:
     exp_rows = _fetch_airtable_records_by_ident(AIRTABLE_EXP_IDENT)
-    experiences = [r.get("fields", {}) for r in exp_rows]
+
+    # helper to coerce best_age_range -> single string
+    def _first_str(x):
+        if isinstance(x, list) and x:
+            return str(x[0])
+        if isinstance(x, str):
+            return x
+        return None
 
     interests_set = set((interests or []))
     vibes_set = set((vibes or []))
@@ -194,7 +202,9 @@ def build_recommendations(
     bad_outdoor = safe_bad_outdoor(weather)
 
     scored: List[Dict] = []
-    for f in experiences:
+    for rec in exp_rows:
+        f = rec.get("fields", {})
+        rid = rec.get("id")
         title = f.get("title", "Untitled")
 
         # coords: prefer split fields; fallback to "lat_lng"
@@ -244,8 +254,10 @@ def build_recommendations(
 
         tod_hint = f.get("best_time_of_day")
         tod_fit = tod_fits(time_of_day, tod_hint)
-        if tod_fit is True:  score += W_TOD
-        elif tod_fit is False: score -= W_TOD * 0.5
+        if tod_fit is True:
+            score += W_TOD
+        elif tod_fit is False:
+            score -= W_TOD * 0.5
 
         is_indoorish = bool(parse_bool(f.get("has_quiet_space")))
         if bad_outdoor and is_indoorish:
@@ -253,13 +265,14 @@ def build_recommendations(
 
         fits_age = None
         try:
-            fits_age = age_fits(f.get("best_age_range"), child_age_years)  # defined below
+            fits_age = age_fits(f.get("best_age_range"), child_age_years)
         except Exception:
             pass
-        if fits_age is True:  score += W_AGE
-        elif fits_age is False: score -= W_AGE * 0.75
+        if fits_age is True:
+            score += W_AGE
+        elif fits_age is False:
+            score -= W_AGE * 0.75
 
-        # perks (kept as fields)
         stroller_friendly = parse_bool(f.get("stroller_friendly"))
         food_nearby       = parse_bool(f.get("food_nearby"))
         quiet_space       = parse_bool(f.get("has_quiet_space"))
@@ -270,6 +283,7 @@ def build_recommendations(
         score -= W_SKIP * skipped
 
         scored.append({
+            "id": rid,  # 👈 include Airtable record id
             "title": title,
             "score": round(score, 2),
             "distance_miles": round(dist_mi, 2),
@@ -279,7 +293,7 @@ def build_recommendations(
             "website": f.get("website") or None,
             "time_estimate_mins": estimate or None,
             "weather_sensitive": weather_sensitive or None,
-            "best_age_range": f.get("best_age_range"),
+            "best_age_range": _first_str(f.get("best_age_range")),  # 👈 normalize
             "interest_tags": list(interest_tags) if interest_tags else [],
             "vibe_tags": list(vibe_tags) if vibe_tags else [],
             "stroller_friendly": stroller_friendly,
@@ -291,22 +305,6 @@ def build_recommendations(
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored
-
-def age_fits(best_age_range: Optional[str], child_age: Optional[float]) -> Optional[bool]:
-    if child_age is None or not best_age_range:
-        return None
-    s = str(best_age_range).strip().lower()
-    if s in {"all", "any"}: return True
-    try:
-        if "+" in s:
-            lo = float(s.replace("+","").strip())
-            return child_age >= lo
-        if "-" in s:
-            lo, hi = [float(x.strip()) for x in s.split("-")]
-            return (child_age >= lo) and (child_age <= hi)
-    except Exception:
-        return None
-    return None
 
 # -------------------- Routes --------------------
 @app.get("/")
