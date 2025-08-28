@@ -304,8 +304,8 @@ def safe_bad_outdoor(w) -> bool:
 
 # ------------------ Airtable config ------------------
 BASE_ID = "appApTB0N861wvwFU"
-API_TOKEN = os.environ.get("AIRTABLE_API_TOKEN", "")
-HEADERS = {"Authorization": f"Bearer {API_TOKEN}"}
+API_KEY = os.environ.get("AIRTABLE_API_KEY", "")
+HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 TABLE_USER = "User Profiles"
 TABLE_EXPERIENCES = "Experiences"
 
