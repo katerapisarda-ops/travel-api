@@ -291,6 +291,7 @@ def build_recommendations(
             "lon": float(lon),
             "address": f.get("address") or None,
             "website": f.get("website") or None,
+            "cost_tier": f.get("cost_tier") or None,  # "$", "$$", "Free"
             "time_estimate_mins": estimate or None,
             "weather_sensitive": weather_sensitive or None,
             "best_age_range": _first_str(f.get("best_age_range")),  # 👈 normalize
