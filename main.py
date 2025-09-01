@@ -184,6 +184,18 @@ def build_recommendations(
 ) -> List[Dict]:
     exp_rows = _fetch_airtable_records_by_ident(AIRTABLE_EXP_IDENT)
 
+    # Debug logging for all records
+    print("\nDEBUG: Airtable Records Raw Data:")
+    for rec in exp_rows:
+        f = rec.get("fields", {})
+        if "Noe" in str(f.get("title", "")):
+            print(f"\nFound record with 'Noe' in title: {f.get('title')}")
+            print(f"Record ID: {rec.get('id')}")
+            print(f"Raw fields: {f}")
+            print(f"Description field: {repr(f.get('description'))}")
+            print(f"Parent Tips field: {repr(f.get('parent_insider_tips'))}")
+            print("Field keys present:", list(f.keys()))
+
     # helper to coerce best_age_range -> single string
     def _first_str(x):
         if isinstance(x, list) and x:
@@ -302,6 +314,9 @@ def build_recommendations(
             "has_quiet_space": quiet_space,
             "less_crowded_place": less_crowded,
             "has_changing_station": changing_station,
+            "description": f.get("description") or None,
+            "parent_insider_tips": f.get("parent_insider_tips") or None,
+            "image_url": (f.get("image_url") or f.get("photo") or None),
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
