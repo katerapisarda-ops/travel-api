@@ -320,6 +320,15 @@ def build_recommendations(
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
+    
+    # Add before return scored
+    print("\nDEBUG: Final recommendations:")
+    for rec in scored[:5]:  # Just look at top 5 for brevity
+        if "Noe" in rec.get("title", ""):
+            print(f"\nProcessed recommendation for: {rec.get('title')}")
+            print(f"Description: {repr(rec.get('description'))}")
+            print(f"Parent Tips: {repr(rec.get('parent_insider_tips'))}")
+
     return scored
 
 # -------------------- Routes --------------------
