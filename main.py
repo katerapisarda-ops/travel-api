@@ -316,6 +316,7 @@ def build_recommendations(
             "has_changing_station": changing_station,
             "description": f.get("description") or None,
             "parent_insider_tips": f.get("parent_insider_tips") or None,
+            "neighborhood": f.get("neighborhood") or None,
             "image_url": (f.get("image_url") or f.get("photo") or None),
         })
 
