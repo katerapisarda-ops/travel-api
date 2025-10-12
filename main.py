@@ -290,6 +290,7 @@ def build_recommendations(
         quiet_space       = parse_bool(f.get("has_quiet_space"))
         less_crowded      = parse_bool(f.get("less_crowded_place"))
         changing_station  = parse_bool(f.get("has_changing_station"))
+        outdoor_space     = parse_bool(f.get("has_outdoor_space"))
 
         skipped = float(f.get("skipped_count") or 0)
         score -= W_SKIP * skipped
@@ -309,14 +310,17 @@ def build_recommendations(
             "best_age_range": _first_str(f.get("best_age_range")),  # 👈 normalize
             "interest_tags": list(interest_tags) if interest_tags else [],
             "vibe_tags": list(vibe_tags) if vibe_tags else [],
-            "stroller_friendly": stroller_friendly,
-            "food_nearby": food_nearby,
-            "has_quiet_space": quiet_space,
-            "less_crowded_place": less_crowded,
+            "restrooms_nearby": parse_bool(f.get("restrooms_nearby")),
             "has_changing_station": changing_station,
+            "food_nearby": food_nearby,
+            "stroller_friendly": stroller_friendly,
+            "has_playground_nearby": parse_bool(f.get("has_playground_nearby")),
+            "has_outdoor_space": outdoor_space,
+            "less_crowded_place": less_crowded,
             "description": f.get("description") or None,
             "parent_insider_tips": f.get("parent_insider_tips") or None,
-            "neighborhood": f.get("neighborhood") or None,
+            "neighborhood_original": f.get("neighborhood_original") or None,
+            "Google Rating": f.get("Google Rating") or None,
             "image_url": (f.get("image_url") or f.get("photo") or None),
         })
 
