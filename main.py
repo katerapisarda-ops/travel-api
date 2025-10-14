@@ -322,7 +322,7 @@ def build_recommendations(
             "neighborhood_original": f.get("neighborhood_original") or None,
             "Google Rating": f.get("Google Rating") or None,
                 "title_sub_tags": f.get("title_sub_tags") or None,
-            "image_url": (f.get("image_url") or f.get("photo") or None),
+            "image_url": (f.get("Photo URL") or f.get("image_url") or f.get("photo") or None),
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
