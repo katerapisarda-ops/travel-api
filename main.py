@@ -321,6 +321,7 @@ def build_recommendations(
             "parent_insider_tips": f.get("parent_insider_tips") or None,
             "neighborhood_original": f.get("neighborhood_original") or None,
             "Google Rating": f.get("Google Rating") or None,
+                "title_sub_tags": f.get("title_sub_tags") or None,
             "image_url": (f.get("image_url") or f.get("photo") or None),
         })
 
