@@ -32,6 +32,8 @@ AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 # Per-table identifiers (ID preferred, else name)
 AIRTABLE_USER_IDENT = os.getenv("AIRTABLE_TABLE_USER_ID") or os.getenv("AIRTABLE_TABLE_USER_NAME")
 AIRTABLE_EXP_IDENT  = os.getenv("AIRTABLE_TABLE_EXPERIENCES_ID") or os.getenv("AIRTABLE_TABLE_EXPERIENCES_NAME")
+AIRTABLE_EVENT_SERIES_IDENT = os.getenv("AIRTABLE_TABLE_EVENT_SERIES_ID") or os.getenv("AIRTABLE_TABLE_EVENT_SERIES_NAME")
+AIRTABLE_EVENT_OCCURRENCES_IDENT = os.getenv("AIRTABLE_TABLE_EVENT_OCCURRENCES_ID") or os.getenv("AIRTABLE_TABLE_EVENT_OCCURRENCES_NAME")
 
 def _airtable_path_component(ident: str) -> str:
     """If ident looks like a table ID (tbl...), use as-is; otherwise URL-encode the name."""
@@ -150,6 +152,126 @@ def safe_bad_outdoor(w) -> bool:
         if "wind" in c and ("strong" in c or "gust" in c): return True
         return False
 
+def age_fits(age_range_str: Optional[str], child_age: Optional[float]) -> Optional[bool]:
+    """Check if child age fits the age range"""
+    if not age_range_str or child_age is None:
+        return None
+    
+    age_range = age_range_str.lower()
+    if "all ages" in age_range:
+        return True
+    elif "baby" in age_range and child_age <= 1:
+        return True
+    elif "toddler" in age_range and 1 < child_age <= 3:
+        return True
+    elif "preschool" in age_range and 3 < child_age <= 5:
+        return True
+    elif "older kid" in age_range and child_age > 6:
+        return True
+    
+    return False
+
+def calculate_event_status(event_start: str, event_end: str, event_date: str) -> str:
+    """Calculate event status: happening_now, happening_soon, happening_today, happening_weekend"""
+    from datetime import datetime, timedelta
+    import pytz
+    
+    try:
+        # Parse event datetime
+        sf_tz = pytz.timezone('America/Los_Angeles')
+        now = datetime.now(sf_tz)
+        
+        # Parse event date and times
+        event_datetime_start = datetime.strptime(f"{event_date} {event_start}", "%Y-%m-%d %I:%M%p")
+        event_datetime_end = datetime.strptime(f"{event_date} {event_end}", "%Y-%m-%d %I:%M%p")
+        
+        # Localize to SF timezone
+        event_datetime_start = sf_tz.localize(event_datetime_start)
+        event_datetime_end = sf_tz.localize(event_datetime_end)
+        
+        # Check if happening now
+        if event_datetime_start <= now <= event_datetime_end:
+            return "happening_now"
+        
+        # Check if happening soon (within next 2 hours)
+        elif event_datetime_start > now and (event_datetime_start - now).total_seconds() <= 7200:
+            return "happening_soon"
+        
+        # Check if happening today
+        elif event_datetime_start.date() == now.date():
+            return "happening_today"
+        
+        # Check if happening this weekend (Friday-Sunday)
+        elif event_datetime_start.date() >= now.date() and event_datetime_start.weekday() >= 4:
+            return "happening_weekend"
+        
+        return "upcoming"
+        
+    except Exception:
+        return "upcoming"
+
+def fetch_events_for_experience(experience_id: str) -> List[Dict]:
+    """Fetch events linked to a specific experience"""
+    try:
+        if not (AIRTABLE_EVENT_SERIES_IDENT and AIRTABLE_EVENT_OCCURRENCES_IDENT):
+            return []
+            
+        # Fetch event series linked to this experience
+        series_records = _fetch_airtable_records_by_ident(AIRTABLE_EVENT_SERIES_IDENT)
+        occurrence_records = _fetch_airtable_records_by_ident(AIRTABLE_EVENT_OCCURRENCES_IDENT)
+        
+        events = []
+        for series in series_records:
+            series_fields = series.get("fields", {})
+            linked_venue = series_fields.get("linked_venue_experience", [])
+            
+            # Check if this series is linked to our experience
+            if experience_id in linked_venue:
+                # Find matching occurrences
+                event_occurrences = series_fields.get("Event Occurrences", [])
+                
+                for occ_id in event_occurrences:
+                    # Find the occurrence record
+                    for occ in occurrence_records:
+                        if occ.get("id") == occ_id:
+                            occ_fields = occ.get("fields", {})
+                            
+                            event_data = {
+                                "event_name": series_fields.get("event_name"),
+                                "event_date": occ_fields.get("date"),
+                                "start_time": series_fields.get("start_time"),
+                                "end_time": series_fields.get("end_time"),
+                                "event_description": series_fields.get("event_description"),
+                                "parent_insider_tips": series_fields.get("parent_insider_tips"),
+                                "event_type": series_fields.get("event_type"),
+                                "event_cost": series_fields.get("event_cost"),
+                                "tickets_required": series_fields.get("tickets_required"),
+                                "tickets_url": series_fields.get("tickets_url"),
+                                "event_website": series_fields.get("event_website"),
+                                "interest_tags": series_fields.get("interest_tags", []),
+                                "vibe_tags": series_fields.get("vibe_tags", []),
+                                "target_age_groups": series_fields.get("target_age_groups", []),
+                                "weather_sensitive": series_fields.get("weather_sensitive"),
+                            }
+                            
+                            # Calculate event status
+                            if event_data["event_date"] and event_data["start_time"] and event_data["end_time"]:
+                                event_data["status"] = calculate_event_status(
+                                    event_data["start_time"], 
+                                    event_data["end_time"], 
+                                    event_data["event_date"]
+                                )
+                            else:
+                                event_data["status"] = "upcoming"
+                            
+                            events.append(event_data)
+                            break
+        
+        return events
+        
+    except Exception:
+        return []
+
 # -------------------- Models --------------------
 class EchoBody(BaseModel):
     lat: float
@@ -168,6 +290,7 @@ class RecReq(BaseModel):
     weather: Any | None = None
     time_of_day: str | None = None
     child_age_years: float | None = None
+    include_events: bool = False
 
 # -------------------- Recommendation engine --------------------
 def build_recommendations(
@@ -181,6 +304,7 @@ def build_recommendations(
     weather: str | Dict | None = None,
     time_of_day: str | None = None,
     child_age_years: float | None = None,
+    include_events: bool = False,
 ) -> List[Dict]:
     exp_rows = _fetch_airtable_records_by_ident(AIRTABLE_EXP_IDENT)
 
@@ -295,6 +419,11 @@ def build_recommendations(
         skipped = float(f.get("skipped_count") or 0)
         score -= W_SKIP * skipped
 
+        # Fetch events if requested
+        events = []
+        if include_events:
+            events = fetch_events_for_experience(rid)
+
         scored.append({
             "id": rid,  # 👈 include Airtable record id
             "title": title,
@@ -321,8 +450,9 @@ def build_recommendations(
             "parent_insider_tips": f.get("parent_insider_tips") or None,
             "neighborhood_original": f.get("neighborhood_original") or None,
             "Google Rating": f.get("Google Rating") or None,
-                "title_sub_tags": f.get("title_sub_tags") or None,
+            "title_sub_tags": f.get("title_sub_tags") or None,
             "image_url": (f.get("Photo URL") or f.get("image_url") or f.get("photo") or None),
+            "events": events if include_events else None,
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
@@ -356,6 +486,10 @@ def debug_vars():
         "user_uses_id": bool(AIRTABLE_USER_IDENT and AIRTABLE_USER_IDENT.startswith("tbl")),
         "exp_ident": AIRTABLE_EXP_IDENT,
         "exp_uses_id": bool(AIRTABLE_EXP_IDENT and AIRTABLE_EXP_IDENT.startswith("tbl")),
+        "event_series_ident": AIRTABLE_EVENT_SERIES_IDENT,
+        "event_series_uses_id": bool(AIRTABLE_EVENT_SERIES_IDENT and AIRTABLE_EVENT_SERIES_IDENT.startswith("tbl")),
+        "event_occurrences_ident": AIRTABLE_EVENT_OCCURRENCES_IDENT,
+        "event_occurrences_uses_id": bool(AIRTABLE_EVENT_OCCURRENCES_IDENT and AIRTABLE_EVENT_OCCURRENCES_IDENT.startswith("tbl")),
     }
 
 @app.get("/debug/airtable")
@@ -389,15 +523,16 @@ def recommendations_get(
     lng: float | None = Query(None),
     lon: float | None = Query(None),
     time: int = Query(90),
+    include_events: bool = Query(False),
 ):
     longitude = lng if lng is not None else lon
     if longitude is None:
         raise HTTPException(status_code=400, detail="Provide either lng or lon")
     t0 = _now_ms()
-    recs = build_recommendations(user_lat=lat, user_lon=longitude, time_available_mins=time)
+    recs = build_recommendations(user_lat=lat, user_lon=longitude, time_available_mins=time, include_events=include_events)
     dur = _now_ms() - t0
     return {"meta": {"total_rows": len(recs), "returned": min(len(recs), 50), "duration_ms": dur,
-                     "echo": {"lat": lat, "lng_or_lon": longitude, "time": time}},
+                     "echo": {"lat": lat, "lng_or_lon": longitude, "time": time, "include_events": include_events}},
             "recommendations": recs[:50]}
 
 # POST (body with richer options)
@@ -417,6 +552,7 @@ def recommendations_post(req: RecReq):
         weather=req.weather,
         time_of_day=req.time_of_day,
         child_age_years=req.child_age_years,
+        include_events=req.include_events,
     )
     dur = _now_ms() - t0
     return {"meta": {"total_rows": len(recs), "returned": min(len(recs), 50), "duration_ms": dur,
