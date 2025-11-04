@@ -24,6 +24,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -------------------- Simple middleware for request timing and trace-id echo --------------------
+@app.middleware("http")
+async def timing_and_trace_middleware(request: Request, call_next):
+    t0 = time.time()
+    trace_id = request.headers.get("X-Client-Trace-Id")
+    response = await call_next(request)
+    dur_ms = int((time.time() - t0) * 1000)
+    response.headers["X-Server-Duration-ms"] = str(dur_ms)
+    if trace_id:
+        response.headers["X-Client-Trace-Id"] = trace_id
+    return response
+
 # -------------------- Env & Airtable config --------------------
 AIRTABLE_KEY = (
     os.getenv("AIRTABLE_API_KEY")
@@ -37,6 +49,10 @@ AIRTABLE_USER_IDENT = os.getenv("AIRTABLE_TABLE_USER_ID") or os.getenv("AIRTABLE
 AIRTABLE_EXP_IDENT  = os.getenv("AIRTABLE_TABLE_EXPERIENCES_ID") or os.getenv("AIRTABLE_TABLE_EXPERIENCES_NAME")
 AIRTABLE_EVENT_SERIES_IDENT = os.getenv("AIRTABLE_TABLE_EVENT_SERIES_ID") or os.getenv("AIRTABLE_TABLE_EVENT_SERIES_NAME")
 AIRTABLE_EVENT_OCCURRENCES_IDENT = os.getenv("AIRTABLE_TABLE_EVENT_OCCURRENCES_ID") or os.getenv("AIRTABLE_TABLE_EVENT_OCCURRENCES_NAME")
+
+# Simple in-process cache for Airtable requests (TTL in seconds)
+AIRTABLE_CACHE_TTL_SEC = int(os.getenv("AIRTABLE_CACHE_TTL_SEC", "120"))
+_AIRTABLE_CACHE: Dict[str, Tuple[float, List[Dict]]] = {}
 
 def _airtable_path_component(ident: str) -> str:
     """If ident looks like a table ID (tbl...), use as-is; otherwise URL-encode the name."""
@@ -62,6 +78,20 @@ def _fetch_airtable_records_by_ident(table_ident: str) -> List[Dict]:
         if not offset:
             break
     return all_records
+
+def _fetch_airtable_records_cached(table_ident: str) -> List[Dict]:
+    """Fetch Airtable records with a tiny in-memory TTL cache."""
+    if not table_ident:
+        return []
+    now = time.time()
+    entry = _AIRTABLE_CACHE.get(table_ident)
+    if entry:
+        ts, records = entry
+        if (now - ts) <= AIRTABLE_CACHE_TTL_SEC:
+            return records
+    records = _fetch_airtable_records_by_ident(table_ident)
+    _AIRTABLE_CACHE[table_ident] = (now, records)
+    return records
 
 # -------------------- Small utils --------------------
 def _now_ms() -> int:
@@ -249,8 +279,8 @@ def fetch_events_for_experience(experience_id: str, *, soon_window_hours: int = 
         if not (AIRTABLE_EVENT_SERIES_IDENT and AIRTABLE_EVENT_OCCURRENCES_IDENT):
             return []
 
-        series_records = _fetch_airtable_records_by_ident(AIRTABLE_EVENT_SERIES_IDENT)
-        occurrence_records = _fetch_airtable_records_by_ident(AIRTABLE_EVENT_OCCURRENCES_IDENT)
+        series_records = _fetch_airtable_records_cached(AIRTABLE_EVENT_SERIES_IDENT)
+        occurrence_records = _fetch_airtable_records_cached(AIRTABLE_EVENT_OCCURRENCES_IDENT)
 
         occ_by_id = {o.get("id"): (o.get("fields", {})) for o in occurrence_records}
         occ_id_set = set(occ_by_id.keys())
@@ -384,6 +414,123 @@ def fetch_events_for_experience(experience_id: str, *, soon_window_hours: int = 
     except Exception:
         return []
 
+def fetch_events_for_experiences_bulk(experience_ids: List[str], *, soon_window_hours: int = 2) -> Dict[str, List[Dict]]:
+    """Efficiently fetch events for a small set of Experience IDs using a single series/occurrence scan."""
+    out: Dict[str, List[Dict]] = {eid: [] for eid in experience_ids}
+    try:
+        if not (AIRTABLE_EVENT_SERIES_IDENT and AIRTABLE_EVENT_OCCURRENCES_IDENT):
+            return out
+
+        series_records = _fetch_airtable_records_cached(AIRTABLE_EVENT_SERIES_IDENT)
+        occurrence_records = _fetch_airtable_records_cached(AIRTABLE_EVENT_OCCURRENCES_IDENT)
+
+        ids_set = set(experience_ids)
+        occ_by_id = {o.get("id"): (o.get("fields", {})) for o in occurrence_records}
+        occ_id_set = set(occ_by_id.keys())
+
+        def pick_field(d: Dict, candidates: List[str]) -> Any:
+            if not isinstance(d, dict):
+                return None
+            norm_map = {"".join(k.lower().replace("_", " ").split()): k for k in d.keys()}
+            for c in candidates:
+                key_norm = "".join(c.lower().replace("_", " ").split())
+                if key_norm in norm_map:
+                    return d.get(norm_map[key_norm])
+            return None
+
+        def get_occurrence_date(of: Dict) -> Any:
+            sd = of.get("start_datetime")
+            if isinstance(sd, str) and "T" in sd:
+                return sd.split("T")[0]
+            for k in ["date", "Date", "event_date", "occurrence_date"]:
+                if k in of and of[k]:
+                    return of[k]
+            return None
+
+        from datetime import datetime
+        def fmt_time(s: str | None) -> Any:
+            if not isinstance(s, str):
+                return None
+            t = s.replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(t)
+                return dt.strftime("%I:%M%p").lstrip("0")
+            except Exception:
+                return None
+
+        def get_series_time(sf: Dict, which: str) -> Any:
+            return pick_field(sf, ["start_time", "Start Time", "start"] if which=="start" else ["end_time", "End Time", "end"])
+
+        # Map series to any target experience
+        for series in series_records:
+            sf = series.get("fields", {})
+            linked = sf.get("linked_venue_experience")
+            linked_ids = set(linked or []) if isinstance(linked, list) else set()
+            if not (linked_ids & ids_set):
+                # heuristic: scan any list field
+                for v in sf.values():
+                    if isinstance(v, list):
+                        s = set(v)
+                        if s & ids_set:
+                            linked_ids |= (s & ids_set)
+                if not linked_ids:
+                    continue
+
+            preferred = sf.get("Event Occurrences")
+            occ_ids = []
+            if isinstance(preferred, list) and all(isinstance(x, str) for x in preferred):
+                occ_ids = [x for x in preferred if x in occ_id_set]
+            if not occ_ids:
+                # fallback subset matching
+                for v in sf.values():
+                    if isinstance(v, list) and v and all(isinstance(x, str) and x.startswith("rec") for x in v):
+                        subset = [x for x in v if x in occ_id_set]
+                        if subset:
+                            occ_ids = subset
+                            break
+
+            for oid in occ_ids:
+                of = occ_by_id.get(oid, {})
+                event_date = get_occurrence_date(of)
+                occ_start_time = fmt_time(of.get("start_datetime"))
+                occ_end_time = fmt_time(of.get("end_datetime"))
+                start_time = occ_start_time or get_series_time(sf, "start")
+                end_time = occ_end_time or get_series_time(sf, "end")
+                event_name = pick_field(sf, ["event_name", "Event Name", "title"]) or sf.get("title")
+
+                ed = {
+                    "event_name": event_name,
+                    "event_date": event_date,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "event_description": pick_field(sf, ["event_description", "description", "Event Description"]) or None,
+                    "parent_insider_tips": sf.get("parent_insider_tips"),
+                    "event_type": sf.get("event_type"),
+                    "event_cost": sf.get("event_cost"),
+                    "tickets_required": sf.get("tickets_required"),
+                    "tickets_url": sf.get("tickets_url"),
+                    "event_website": sf.get("event_website") or sf.get("website"),
+                    "interest_tags": sf.get("interest_tags", []) or [],
+                    "vibe_tags": sf.get("vibe_tags", []) or [],
+                    "target_age_groups": sf.get("target_age_groups", []) or [],
+                    "weather_sensitive": sf.get("weather_sensitive"),
+                }
+                if ed["event_date"] and ed["start_time"] and ed["end_time"]:
+                    try:
+                        ed["status"] = calculate_event_status(ed["start_time"], ed["end_time"], ed["event_date"], soon_window_hours=soon_window_hours)
+                    except Exception:
+                        ed["status"] = "upcoming"
+                else:
+                    ed["status"] = "upcoming"
+
+                # append to each linked id (some series may link to multiple venues)
+                for eid in linked_ids & ids_set:
+                    out[eid].append(ed)
+
+        return out
+    except Exception:
+        return out
+
 # -------------------- Models --------------------
 class EchoBody(BaseModel):
     lat: float
@@ -406,6 +553,17 @@ class RecReq(BaseModel):
     event_timeframe: str | None = None  # one of: now, soon, today, weekend, upcoming, all
     soon_hours: int = 2
     drop_past_events: bool = True
+
+class EventsEnrichReq(BaseModel):
+    ids: List[str]
+    event_timeframe: str | None = None
+    soon_hours: int = 2
+    drop_past_events: bool = True
+
+class EventsEnrichResp(BaseModel):
+    ok: bool
+    total_ids: int
+    events_by_id: Dict[str, List[Dict]]
 
 # -------------------- Recommendation engine --------------------
 def build_recommendations(
@@ -857,4 +1015,32 @@ def recommendations_post(req: RecReq):
                                "event_timeframe": req.event_timeframe, "soon_hours": req.soon_hours,
                                "drop_past_events": req.drop_past_events}},
             "recommendations": recs[:50]}
+
+# Enrich events for a small list of experience IDs (decoupled from scoring)
+@app.post("/events-enrich")
+def events_enrich(req: EventsEnrichReq):
+    t0 = _now_ms()
+    ids = [i for i in (req.ids or []) if isinstance(i, str) and i.startswith("rec")]
+    if not ids:
+        return {"ok": True, "total_ids": 0, "events_by_id": {}}
+
+    raw = fetch_events_for_experiences_bulk(ids, soon_window_hours=req.soon_hours)
+
+    def filter_events(ev_list: List[Dict]) -> List[Dict]:
+        # Drop past
+        items = [e for e in ev_list if not (req.drop_past_events and str(e.get("status")) == "past")]
+        tf = (req.event_timeframe or "").strip().lower() if req.event_timeframe else None
+        if not tf or tf == "all":
+            return items
+        allowed = None
+        if tf in {"now", "happening_now"}: allowed = {"happening_now"}
+        elif tf in {"soon", "happening_soon"}: allowed = {"happening_soon"}
+        elif tf == "today": allowed = {"happening_today"}
+        elif tf == "weekend": allowed = {"happening_weekend"}
+        elif tf in {"upcoming", "future"}: allowed = {"happening_today", "happening_weekend", "upcoming"}
+        return [e for e in items if (allowed is None or str(e.get("status")) in allowed)]
+
+    events_by_id: Dict[str, List[Dict]] = {eid: filter_events(raw.get(eid, [])) for eid in ids}
+    dur = _now_ms() - t0
+    return {"ok": True, "total_ids": len(ids), "duration_ms": dur, "events_by_id": events_by_id}
 # -------------------- End of file --------------------
